@@ -500,10 +500,10 @@ fprintf('Maximum VFI Euler Error (Absolute %%): %f%%\n', max_EE_err);
 
 %% Question 2 - General Equilibirum
 % set initial min and max for R
-R_min = 0.8; % Re-allow R to be < 1. It can go very low because MPK = R natively.
+R_min = 0.995;   % R must be > 1 under partial depreciation
 R_max = 1/par.beta;
-% WE WERE NOT GIVEN THE ALPHA IN THE PROBLEM SET
 par.alpha = 0.33;
+par.delta = 0.025;  % depreciation rate
 % set up loop parameters
 tol = 1e-3;
 diff = tol +1;
@@ -533,17 +533,16 @@ while abs(diff) > tol && iter < max_iter
     iter = iter +1;
     % set the guess for R as the average of min and max guesses
     R_guess = (R_max+R_min)/2;
-    % compute demand for capital and wage (formulas found on paper)
-    % Reverting to the strict PDF formulation: Marginal Product = R
-    
-    k_d = (par.alpha / R_guess)^(1/(1-par.alpha));
-    w_guess = (1 - par.alpha) * (par.alpha / R_guess)^(par.alpha / (1 - par.alpha));
+    % Firm FOCs under partial depreciation: R = 1 + alpha*K^(alpha-1) - delta
+    %   => alpha*K^(alpha-1) = R - 1 + delta
+    %   => K = (alpha / (R - 1 + delta))^(1/(1-alpha))
+    k_d = (par.alpha / (R_guess - 1 + par.delta))^(1/(1-par.alpha));
+    w_guess = (1 - par.alpha) * k_d^par.alpha;
     par.R = R_guess;
     par.w = w_guess;
-    % Rebuild capital grid: k_N = 10*w per PDF instructions
-    cpar.max = 10 * par.w;
-    gri.k = linspace(log(cpar.min + 1), log(cpar.max + 1), cpar.Nkap);
-    gri.k = exp(gri.k) - 1;
+    % Keep gri.k FIXED (same as Marko) — rebuilding each iteration
+    % causes instability. The EGM + griddedInterpolant handle
+    % off-grid values via linear extrapolation.
     % solve EGM with these new parameters
     solving_EGM = EGM(par, cpar, gri);
     % store the capital policy from EGM on this iteration
@@ -551,15 +550,13 @@ while abs(diff) > tol && iter < max_iter
     % Simulate using discrete shocks (vectorized by z-state, same as Q1.A.3)
     k_i = zeros(numInd, time_GE);
     k_i(:, 1) = k_sim;
-    k_lo = gri.k(1);
-    k_hi = gri.k(end);
     for t = 1:time_GE - 1
         for z_state = 1:cpar.N
             mask = (z_idx_GE(:, t) == z_state);
             if any(mask)
-                k_query = min(max(k_i(mask, t), k_lo), k_hi);
-                k_next = interp1(gri.k, kpol_k(:, z_state), k_query, 'linear');
-                k_i(mask, t+1) = max(0, k_next);
+                % Allow extrapolation beyond grid (no clamping)
+                k_next = interp1(gri.k, kpol_k(:, z_state), k_i(mask, t), 'linear', 'extrap');
+                k_i(mask, t+1) = max(0, k_next);  % only enforce borrowing constraint
             end
         end
     end
@@ -620,3 +617,363 @@ fprintf('\n--- Inequality Statistics (General Equilibrium) ---\n');
 fprintf('Gini Coefficient:      %.4f\n', gini);
 fprintf('90/10 Percentile Ratio: %.4f\n', ratio_90_10);
 fprintf('99/1 Percentile Ratio:  %.4f\n', ratio_99_1);
+
+
+%% Question 3 - Heterogeneous Asset Returns
+% =========================================================================
+% R_t^i = 1 + r_bar + r_tilde_t^i
+% where r_tilde follows an independent AR(1) with persistence rho_r
+% and innovation variance sigma_r^2 = (1 - rho_r^2) * 0.002
+% =========================================================================
+
+fprintf('\n=== Question 3: Heterogeneous Asset Returns ===\n');
+
+% --- Q3 Parameters ---
+cpar.Nr  = 5;              % number of return states
+cpar.Nz  = cpar.N;         % number of productivity states (already = 5)
+cpar.N_het = cpar.Nz * cpar.Nr;  % total joint states = 25
+
+% Initial guess for the mean net return (used in PE, refined in GE)
+par.r_bar = (0.985 / par.beta) - 1;  % ≈ 0.0051
+
+% =====================================================================
+% Case 1: rho_r = 0 (i.i.d. returns)
+% =====================================================================
+par.rho_r1 = 0;
+sigma_r2_case1 = (1 - par.rho_r1^2) * 0.002;   % = 0.002
+
+% NOTE: rouwenhorst(N, mu, rho, sigma_eps) expects the std dev of
+% *innovations*, which is sqrt(sigma_r^2), NOT the variance itself.
+[r_grid1, P_r1] = rouwenhorst(cpar.Nr, 0, par.rho_r1, sqrt(sigma_r2_case1));
+
+% =====================================================================
+% Case 2: rho_r = 0.9 (persistent returns)
+% =====================================================================
+par.rho_r2 = 0.9;
+sigma_r2_case2 = (1 - par.rho_r2^2) * 0.002;   % = 0.00038
+
+[r_grid2, P_r2] = rouwenhorst(cpar.Nr, 0, par.rho_r2, sqrt(sigma_r2_case2));
+
+% =====================================================================
+% Build the 25×25 Kronecker joint transition matrix (Case 1)
+% =====================================================================
+% Since z and r_tilde are INDEPENDENT:
+%   P_joint(s, s') = P_z(z, z') * P_r(r, r')
+%
+% Kronecker ordering: P_joint = kron(P_z, P_r)
+%   => z is the OUTER (slow) index, r is the INNER (fast) index
+%   => joint state s = (z_j - 1)*Nr + r_m  for j=1..Nz, m=1..Nr
+
+P_joint1 = kron(gri.prob, P_r1);   % 25×25 transition matrix (Case 1)
+
+% Joint grids (25×1 vectors)
+z_joint1 = kron(gri.z, ones(cpar.Nr, 1));   % each z repeated Nr times
+r_joint1 = kron(ones(cpar.Nz, 1), r_grid1); % r_grid tiled Nz times
+
+% Return levels for each of the 25 joint states
+R_joint1 = 1 + par.r_bar + r_joint1;        % 25×1
+
+% =====================================================================
+% Build the 25×25 Kronecker joint transition matrix (Case 2)
+% =====================================================================
+P_joint2 = kron(gri.prob, P_r2);   % 25×25 transition matrix (Case 2)
+
+z_joint2 = kron(gri.z, ones(cpar.Nr, 1));
+r_joint2 = kron(ones(cpar.Nz, 1), r_grid2);
+
+R_joint2 = 1 + par.r_bar + r_joint2;
+
+% =====================================================================
+% Verification
+% =====================================================================
+fprintf('\n--- Case 1: rho_r = %.1f ---\n', par.rho_r1);
+fprintf('P_joint1 size: [%d x %d]\n', size(P_joint1,1), size(P_joint1,2));
+fprintf('Row sums all ≈ 1? Max deviation: %e\n', max(abs(sum(P_joint1,2) - 1)));
+fprintf('r_grid1 (return shocks): ');  fprintf('%.4f  ', r_grid1); fprintf('\n');
+fprintf('R_joint1 range: [%.4f, %.4f]\n', min(R_joint1), max(R_joint1));
+
+fprintf('\n--- Case 2: rho_r = %.1f ---\n', par.rho_r2);
+fprintf('P_joint2 size: [%d x %d]\n', size(P_joint2,1), size(P_joint2,2));
+fprintf('Row sums all ≈ 1? Max deviation: %e\n', max(abs(sum(P_joint2,2) - 1)));
+fprintf('r_grid2 (return shocks): ');  fprintf('%.4f  ', r_grid2); fprintf('\n');
+fprintf('R_joint2 range: [%.4f, %.4f]\n', min(R_joint2), max(R_joint2));
+
+% Display P_r for inspection (5×5, easy to read)
+fprintf('\nP_r (Case 1, rho=0) — should have identical rows (iid):\n');
+disp(P_r1);
+fprintf('P_r (Case 2, rho=0.9) — should be diagonally dominant:\n');
+disp(P_r2);
+
+
+%% Now we can simulate with the different EGM
+% =====================================================================
+% Q3.1 — Solve household problem for given r_bar (Partial Equilibrium)
+% =====================================================================
+
+% --- Case 1: rho_r = 0 ---
+fprintf('\n--- Q3.1 Case 1: PE solve (rho_r = 0) ---\n');
+
+% Package the joint grids into a struct that EGM_het expects
+gri_het1.k    = gri.k;
+gri_het1.z    = z_joint1;       % 25×1
+gri_het1.r    = r_joint1;       % 25×1
+gri_het1.prob = P_joint1;       % 25×25
+
+solving_EGM_het1 = EGM_het(par, cpar, gri_het1);
+
+% Plot savings policies: highest vs lowest return states
+% Joint state ordering: s = (z_idx-1)*Nr + r_idx
+% Lowest  z, lowest  r  →  s = 1    (z=1, r=1)
+% Lowest  z, highest r  →  s = 5    (z=1, r=5)
+% Highest z, lowest  r  →  s = 21   (z=5, r=1)
+% Highest z, highest r  →  s = 25   (z=5, r=5)
+
+figure('Name', 'Q3 Case 1: Savings Policy (rho_r=0)');
+hold on;
+plot(gri.k, solving_EGM_het1.kpol_k(:, 1),  'b--', 'LineWidth', 2, ...
+    'DisplayName', sprintf('Low z, Low r (s=1)'));
+plot(gri.k, solving_EGM_het1.kpol_k(:, 5),  'b-',  'LineWidth', 2, ...
+    'DisplayName', sprintf('Low z, High r (s=5)'));
+plot(gri.k, solving_EGM_het1.kpol_k(:, 21), 'r--', 'LineWidth', 2, ...
+    'DisplayName', sprintf('High z, Low r (s=21)'));
+plot(gri.k, solving_EGM_het1.kpol_k(:, 25), 'r-',  'LineWidth', 2, ...
+    'DisplayName', sprintf('High z, High r (s=25)'));
+plot(gri.k, gri.k, 'k:', 'LineWidth', 1, 'HandleVisibility', 'off');
+hold off;
+title('Savings Policy $k''(k,s)$ — Case 1 ($\rho_r = 0$)', 'Interpreter', 'latex', 'FontSize', 14);
+xlabel('Current Assets ($k$)', 'Interpreter', 'latex', 'FontSize', 12);
+ylabel('Next Period Assets ($k''$)', 'Interpreter', 'latex', 'FontSize', 12);
+legend('Location', 'northwest', 'FontSize', 9);
+grid on;
+
+% --- Case 2: rho_r = 0.9 ---
+fprintf('\n--- Q3.1 Case 2: PE solve (rho_r = 0.9) ---\n');
+
+gri_het2.k    = gri.k;
+gri_het2.z    = z_joint2;
+gri_het2.r    = r_joint2;
+gri_het2.prob = P_joint2;
+
+solving_EGM_het2 = EGM_het(par, cpar, gri_het2);
+
+figure('Name', 'Q3 Case 2: Savings Policy (rho_r=0.9)');
+hold on;
+plot(gri.k, solving_EGM_het2.kpol_k(:, 1),  'b--', 'LineWidth', 2, ...
+    'DisplayName', sprintf('Low z, Low r (s=1)'));
+plot(gri.k, solving_EGM_het2.kpol_k(:, 5),  'b-',  'LineWidth', 2, ...
+    'DisplayName', sprintf('Low z, High r (s=5)'));
+plot(gri.k, solving_EGM_het2.kpol_k(:, 21), 'r--', 'LineWidth', 2, ...
+    'DisplayName', sprintf('High z, Low r (s=21)'));
+plot(gri.k, solving_EGM_het2.kpol_k(:, 25), 'r-',  'LineWidth', 2, ...
+    'DisplayName', sprintf('High z, High r (s=25)'));
+plot(gri.k, gri.k, 'k:', 'LineWidth', 1, 'HandleVisibility', 'off');
+hold off;
+title('Savings Policy $k''(k,s)$ — Case 2 ($\rho_r = 0.9$)', 'Interpreter', 'latex', 'FontSize', 14);
+xlabel('Current Assets ($k$)', 'Interpreter', 'latex', 'FontSize', 12);
+ylabel('Next Period Assets ($k''$)', 'Interpreter', 'latex', 'FontSize', 12);
+legend('Location', 'northwest', 'FontSize', 9);
+grid on;
+
+%% =====================================================================
+% Q3.2 — General Equilibrium: Bisection on r_bar
+% Q3.3 — Wealth Distribution Analysis (Gini, Percentile Ratios, Pareto)
+% =====================================================================
+%
+% We loop over both cases:
+%   case_idx = 1 → rho_r = 0    (i.i.d. returns)
+%   case_idx = 2 → rho_r = 0.9  (persistent returns)
+%
+% For each case we:
+%   1. Pre-simulate independent r_tilde shocks (Markov chain)
+%   2. Bisect on r_bar to clear the capital market
+%   3. Compute inequality statistics and Pareto tail
+% =====================================================================
+
+rho_r_cases  = [0, 0.9];
+r_grids      = {r_grid1, r_grid2};
+P_r_mats     = {P_r1, P_r2};
+P_joint_mats = {P_joint1, P_joint2};
+z_joints     = {z_joint1, z_joint2};
+r_joints     = {r_joint1, r_joint2};
+
+% Storage for results
+Q3_r_bar  = zeros(1, 2);
+Q3_w      = zeros(1, 2);
+Q3_K      = zeros(1, 2);
+Q3_gini   = zeros(1, 2);
+Q3_90_10  = zeros(1, 2);
+Q3_99_1   = zeros(1, 2);
+
+% We use the z shocks already pre-drawn in Q2 (z_idx_GE, numInd × time_GE)
+% and pre-draw r shocks below for each case.
+
+for case_idx = 1:2
+    
+    rho_r    = rho_r_cases(case_idx);
+    P_r_case = P_r_mats{case_idx};
+    
+    fprintf('\n=== Q3.2 GE Bisection — Case %d (rho_r = %.1f) ===\n', case_idx, rho_r);
+    
+    % --- 1. Pre-simulate r_tilde shocks (independent of z) ---
+    r_idx_GE = zeros(numInd, time_GE);
+    r_idx_GE(:, 1) = 3;  % start at median return state
+    P_cum_r = cumsum(P_r_case, 2);
+    rng(456 + case_idx);  % different seed from z shocks, reproducible
+    draws_r = rand(numInd, time_GE);
+    
+    for t = 1:time_GE - 1
+        for r_state = 1:cpar.Nr
+            mask = (r_idx_GE(:, t) == r_state);
+            if any(mask)
+                r_idx_GE(mask, t+1) = sum(draws_r(mask, t) > P_cum_r(r_state, :), 2) + 1;
+            end
+        end
+    end
+    
+    % Combined joint index: s = (z_idx - 1) * Nr + r_idx
+    het_idx_GE = (z_idx_GE - 1) * cpar.Nr + r_idx_GE;
+    
+    % --- 2. GE Bisection on r_bar ---
+    % Firm FOCs:  r_k = r_bar + delta
+    %             K_d = (alpha / r_k)^(1/(1-alpha))
+    %             w   = (1 - alpha) * K_d^alpha
+    
+    r_bar_min = par.delta - 0.02;                     % floor near zero real return
+    r_bar_max = (0.985 / par.beta) - 1 + 0.05;       % generous upper bound
+    tol_Q3    = 1e-3;
+    diff_Q3   = tol_Q3 + 1;
+    iter_Q3   = 0;
+    max_iter_Q3 = 50;
+    
+    k_sim_het = 5 * ones(numInd, 1);   % initial capital for all agents
+    
+    % Prepare the gri_het struct for this case
+    gri_het_case.k    = gri.k;
+    gri_het_case.z    = z_joints{case_idx};
+    gri_het_case.r    = r_joints{case_idx};
+    gri_het_case.prob = P_joint_mats{case_idx};
+    
+    while abs(diff_Q3) > tol_Q3 && iter_Q3 < max_iter_Q3
+        iter_Q3 = iter_Q3 + 1;
+        
+        % Bisect
+        par.r_bar = (r_bar_max + r_bar_min) / 2;
+        
+        % Firm FOCs
+        r_k = par.r_bar + par.delta;
+        if r_k <= 0
+            fprintf('  Warning: r_k = %.4f <= 0, adjusting bounds.\n', r_k);
+            r_bar_min = par.r_bar;
+            continue;
+        end
+        k_d = (par.alpha / r_k)^(1 / (1 - par.alpha));
+        par.w = (1 - par.alpha) * k_d^par.alpha;
+        
+        % Solve EGM_het
+        solving_GE_het = EGM_het(par, cpar, gri_het_case);
+        
+        % Simulate 2000 agents
+        k_i_het = zeros(numInd, time_GE);
+        k_i_het(:, 1) = k_sim_het;
+        
+        for t = 1:time_GE - 1
+            for s = 1:cpar.N_het
+                mask = (het_idx_GE(:, t) == s);
+                if any(mask)
+                    k_next = interp1(gri.k, solving_GE_het.kpol_k(:, s), ...
+                                     k_i_het(mask, t), 'linear', 'extrap');
+                    k_i_het(mask, t+1) = max(0, k_next);  % borrowing constraint only
+                end
+            end
+        end
+        
+        k_sim_het = k_i_het(:, end);
+        k_supply  = mean(k_sim_het);
+        diff_Q3   = k_supply - k_d;
+        
+        fprintf('  Iter %2d: r_bar = %.4f | w = %.4f | K_sup = %.3f | K_dem = %.3f | Diff = %.3f\n', ...
+                 iter_Q3, par.r_bar, par.w, k_supply, k_d, diff_Q3);
+        
+        if diff_Q3 > 0
+            r_bar_max = par.r_bar;
+        else
+            r_bar_min = par.r_bar;
+        end
+    end
+    
+    fprintf('  GE found! r_bar* = %.4f, w* = %.4f, K* = %.4f\n', par.r_bar, par.w, k_supply);
+    
+    % --- 3. Wealth Distribution Statistics (Q3.3) ---
+    wealth_sorted = sort(k_sim_het);
+    N_ind_het     = length(wealth_sorted);
+    
+    % Gini
+    gini_het = (2 * sum((1:N_ind_het)' .* wealth_sorted)) / ...
+               (N_ind_het * sum(wealth_sorted)) - (N_ind_het + 1) / N_ind_het;
+    
+    % Percentile ratios
+    p1_het  = prctile(k_sim_het, 1);
+    p10_het = prctile(k_sim_het, 10);
+    p90_het = prctile(k_sim_het, 90);
+    p99_het = prctile(k_sim_het, 99);
+    ratio_90_10_het = p90_het / p10_het;
+    ratio_99_1_het  = p99_het / p1_het;
+    
+    fprintf('  Gini = %.4f | 90/10 = %.4f | 99/1 = %.4f\n', ...
+             gini_het, ratio_90_10_het, ratio_99_1_het);
+    
+    % Store
+    Q3_r_bar(case_idx)  = par.r_bar;
+    Q3_w(case_idx)      = par.w;
+    Q3_K(case_idx)      = k_supply;
+    Q3_gini(case_idx)   = gini_het;
+    Q3_90_10(case_idx)  = ratio_90_10_het;
+    Q3_99_1(case_idx)   = ratio_99_1_het;
+    
+    % --- Wealth distribution histogram ---
+    figure('Name', sprintf('Q3 Wealth Distribution (rho_r=%.1f)', rho_r));
+    hold on;
+    histogram(k_sim_het, 60, 'Normalization', 'pdf', ...
+        'FaceColor', [0.2 0.4 0.6], 'EdgeColor', 'w', 'DisplayName', 'Histogram');
+    bw_het = std(k_sim_het) / 3;
+    [f_kde_het, xi_kde_het] = ksdensity(k_sim_het, 'Bandwidth', bw_het);
+    plot(xi_kde_het, f_kde_het, 'r-', 'LineWidth', 2, 'DisplayName', 'Kernel Density');
+    title(sprintf('Stationary Wealth Distribution ($\\rho_r = %.1f$)', rho_r), ...
+          'Interpreter', 'latex', 'FontSize', 14);
+    xlabel('Asset Holdings ($k$)', 'Interpreter', 'latex', 'FontSize', 12);
+    ylabel('Density', 'Interpreter', 'latex', 'FontSize', 12);
+    legend('Location', 'northeast');
+    grid on; hold off;
+    
+    % --- Pareto tail: log(1 - CDF) vs log(k) ---
+    figure('Name', sprintf('Q3 Pareto Tail (rho_r=%.1f)', rho_r));
+    empirical_cdf  = (1:N_ind_het)' / N_ind_het;
+    survival_func  = 1 - empirical_cdf;
+    valid_idx      = wealth_sorted > 0.1 & survival_func > 0;
+    
+    plot(log(wealth_sorted(valid_idx)), log(survival_func(valid_idx)), ...
+         'b-', 'LineWidth', 2);
+    title(sprintf('Pareto Tail Test ($\\rho_r = %.1f$)', rho_r), ...
+          'Interpreter', 'latex', 'FontSize', 14);
+    xlabel('$\log(k)$', 'Interpreter', 'latex', 'FontSize', 12);
+    ylabel('$\log(1 - \hat{F}(k))$', 'Interpreter', 'latex', 'FontSize', 12);
+    grid on;
+    
+end % end case loop
+
+%% =====================================================================
+% Final Comparison Table: Q3 Results
+% =====================================================================
+fprintf('\n===================================================================\n');
+fprintf('TABLE: Q3 Heterogeneous Returns — General Equilibrium Results\n');
+fprintf('===================================================================\n');
+fprintf('%-20s | %-10s | %-10s | %-10s | %-10s | %-10s | %-10s\n', ...
+        'Case', 'r_bar*', 'w*', 'K*', 'Gini', 'P90/P10', 'P99/P1');
+fprintf('-------------------------------------------------------------------\n');
+for case_idx = 1:2
+    fprintf('%-20s | %-10.4f | %-10.4f | %-10.4f | %-10.4f | %-10.4f | %-10.4f\n', ...
+        sprintf('rho_r = %.1f', rho_r_cases(case_idx)), ...
+        Q3_r_bar(case_idx), Q3_w(case_idx), Q3_K(case_idx), ...
+        Q3_gini(case_idx), Q3_90_10(case_idx), Q3_99_1(case_idx));
+end
+fprintf('===================================================================\n');
