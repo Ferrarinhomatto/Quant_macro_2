@@ -503,7 +503,8 @@ if run_robustness
     legend('Location','northwest','Interpreter','latex','FontSize',6); grid on; hold off;
 end
 sgtitle('Q1: Capital Policy Functions $k''(k,z)$', 'Interpreter', 'latex', 'FontSize', 14);
-
+if ~exist('1_graphs', 'dir'); mkdir('1_graphs'); end
+exportgraphics(fig_kpol, '1_graphs/Q1_kpol_combined.png', 'Resolution', 300);
 
 % --- Figure 2: Combined c Policy Functions (2x2) ---
 fig_cpol = figure('Name', 'Q1 Combined: Consumption Policy Functions');
@@ -535,7 +536,7 @@ if run_robustness && run_VFI_robustness
     legend('Location','northwest','Interpreter','latex','FontSize',6); grid on; hold off;
 end
 sgtitle('Q1: Consumption Policy Functions $c(k,z)$', 'Interpreter', 'latex', 'FontSize', 14);
-
+exportgraphics(fig_cpol, '1_graphs/Q1_cpol_combined.png', 'Resolution', 300);
 
 % --- Figure 3: Combined Euler Equation Errors (2x2) ---
 fig_ee = figure('Name', 'Q1 Combined: Euler Equation Errors');
@@ -580,7 +581,7 @@ if run_robustness
     legend('Location','northeast','Interpreter','latex','FontSize',6); grid on; hold off;
 end
 sgtitle('Q1: Euler Equation Errors', 'Interpreter', 'latex', 'FontSize', 14);
-
+exportgraphics(fig_ee, '1_graphs/Q1_euler_combined.png', 'Resolution', 300);
 
 % --- Figure 4: Combined PE Wealth Distributions (2x2) ---
 fig_wealth_pe = figure('Name', 'Q1 Combined: PE Wealth Distributions');
@@ -609,7 +610,7 @@ if run_robustness
     xlabel('$k$', 'Interpreter', 'latex'); ylabel('Density', 'Interpreter', 'latex'); grid on;
 end
 sgtitle('Q1: Stationary Wealth Distributions (PE)', 'Interpreter', 'latex', 'FontSize', 14);
-
+exportgraphics(fig_wealth_pe, '1_graphs/Q1_wealth_combined.png', 'Resolution', 300);
 
 % --- Figure 5: Combined GE Wealth Distributions (1x2) ---
 fig_wealth_ge = figure('Name', 'Q2 Combined: GE Wealth Distributions');
@@ -635,7 +636,7 @@ if run_robustness
     legend('Location','northeast'); grid on; hold off;
 end
 sgtitle('Q2: GE Stationary Wealth Distributions ($R^*$)', 'Interpreter', 'latex', 'FontSize', 14);
-
+exportgraphics(fig_wealth_ge, '1_graphs/Q2_GE_wealth_combined.png', 'Resolution', 300);
 
 
 %% ---------------------------------------------------------------------------------
@@ -866,11 +867,12 @@ xlabel('$\log(k)$', 'Interpreter', 'latex');
 ylabel('$\log(1 - \mathrm{CDF}(k))$', 'Interpreter', 'latex');
 legend('Location', 'southwest', 'Interpreter', 'latex');
 grid on; hold off;
+exportgraphics(f_pareto, sprintf('1_graphs/Q3_Pareto_Setup%d.png', s_idx), 'Resolution', 300);
 
 % --- Combined Q3 Figures for this setup (rho=0 vs rho=0.9) ---
 
 % Combined Savings Policy (1x2)
-figure('Name', sprintf('Q3 Combined Savings Policy (%s)', current_setup.name));
+fig_q3_sav = figure('Name', sprintf('Q3 Combined Savings Policy (%s)', current_setup.name));
 for ci = 1:2
     subplot(1,2,ci); hold on;
     plot(gri_k_q3, kpol_het_cases{ci}(:,21), 'r-', 'LineWidth', 2, 'DisplayName', 'High z, Low r');
@@ -881,9 +883,10 @@ for ci = 1:2
     legend('Location','northwest','FontSize',7); grid on; hold off;
 end
 sgtitle(sprintf('Q3 Savings Policy: %s', current_setup.name), 'Interpreter', 'latex', 'FontSize', 14);
+exportgraphics(fig_q3_sav, sprintf('1_graphs/Q3_Savings_Setup%d.png', s_idx), 'Resolution', 300);
 
 % Combined Consumption Policy (1x2)
-figure('Name', sprintf('Q3 Combined Consumption Policy (%s)', current_setup.name));
+fig_q3_con = figure('Name', sprintf('Q3 Combined Consumption Policy (%s)', current_setup.name));
 for ci = 1:2
     subplot(1,2,ci); hold on;
     plot(gri_k_q3, cpol21_cases{ci}, 'r-', 'LineWidth', 2, 'DisplayName', 'High z, Low r');
@@ -893,9 +896,10 @@ for ci = 1:2
     legend('Location','northwest','FontSize',7); grid on; hold off;
 end
 sgtitle(sprintf('Q3 Consumption Policy: %s', current_setup.name), 'Interpreter', 'latex', 'FontSize', 14);
+exportgraphics(fig_q3_con, sprintf('1_graphs/Q3_Consumption_Setup%d.png', s_idx), 'Resolution', 300);
 
 % Combined Wealth Distribution (1x2)
-figure('Name', sprintf('Q3 Combined Wealth Distribution (%s)', current_setup.name));
+fig_q3_wea = figure('Name', sprintf('Q3 Combined Wealth Distribution (%s)', current_setup.name));
 for ci = 1:2
     subplot(1,2,ci); hold on;
     histogram(k_sim_cases{ci}, 60, 'Normalization','pdf', 'FaceColor',[0.3 0.5 0.7], 'EdgeColor','w', 'DisplayName','Histogram');
@@ -907,6 +911,7 @@ for ci = 1:2
     legend('Location','northeast'); grid on; hold off;
 end
 sgtitle(sprintf('Q3 GE Wealth Distribution: %s', current_setup.name), 'Interpreter', 'latex', 'FontSize', 14);
+exportgraphics(fig_q3_wea, sprintf('1_graphs/Q3_Wealth_Setup%d.png', s_idx), 'Resolution', 300);
 
 end % End outer setup loop
 
@@ -1224,4 +1229,5 @@ if run_robustness
     legend('Location','northeast','Interpreter','latex'); grid on; hold off;
 
     sgtitle('Extra Robustness ($k_{max}=200, N_k=40, \sigma_e=0.05$, No Extrap)', 'Interpreter', 'latex', 'FontSize', 14);
+    exportgraphics(gcf, '1_graphs/Extra_Robustness_Combined.png', 'Resolution', 300);
 end
